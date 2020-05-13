@@ -1,5 +1,7 @@
 import math
+import numpy as np
 
+from utils import sythesis_coefficients
 from header import Header, ChannelModeInfo
 from huffman import decode_quadruples, decode_big_values
 from side_info import SideInfo, BlockTypeInfo
@@ -56,6 +58,7 @@ class MainData:
 
         # Finally we reach time domain!
         self.frequency_inversion(channel_num)
+        self.synthesis(channel_num)
 
     def unpack_scale_factors(self, channel_num):
         """
@@ -449,6 +452,50 @@ class MainData:
         polyphase filter bank , every odd time sample of every odd subband should
         be multiplied by -1 to compensate for frequency inversion.
         '''
+        for gran in range(2):
+            for chan in range(channel_num):
+                for sb in range(0, 32, 2):
+                    # TODO: what is odd? zero base or one base
+                    for idx in range(0, 18, 2):
+                        self.samples[gran][chan][sb][idx] *= -1
+
+    def synthesis(self, channel_num):
+        '''
+        The synthesis Polyphase filterbank transforms the 32 subbands of 18 time domain samples in
+        each granule to 18 blocks of 32 PCM samples, which is the final decoding result.
+        '''
+        print('>>> synthesis Polyphase filterbank transforming.')
+        queue_V = []
+        for gran in range(2):
+            for chan in range(channel_num):
+                for idx in range(16):
+                    # TODO: quite confused. We have 18 subbands but just use 16
+                    # 1. fetch subband samples
+                    X = [self.samples[gran][chan][sb][idx] for sb in range(32)]
+                    # 2. DCT without optimization
+                    queue_V.append(self._DCT_I(X))
+                # 3. create U vector.
+                U, flap = [], 0
+                for idx in range(16):
+                    U += queue_V[idx][flap * 32:(flap + 1) * 32]
+                    flap = 1 - flap
+
+                # 4. produce W vector
+                W = [U[i] * sythesis_coefficients.D[i] for i in range(512)]
+
+                # 5. produce PCM samples
+                PCM = [sum([W[j + 32 * i] for i in range(16)]) for j in range(32)]
+                # TODO: save PCM output
+                # TODO: 转为整数 保存输出
+
+    def _DCT_I(self, X: list) -> list:
+        '''
+        DCT-I (32-64)
+        $V[i]=\sum_{k=0}^{31} X[k] \cos \left[\frac{(16+i)(2 k+1) \pi}{64}\right]$ for $i=0,1, \ldots 63$
+        '''
+        # V=[0]*64
+        V = [sum([X[k] * math.cos((16 + i) * (2 * k + 1) * math.pi / 64) for k in range(32)]) for i in range(64)]
+        return V
 
 
 def requantize_s(fre_line, global_gain, subblock_gain, multiplier, scalefac_s):
