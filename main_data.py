@@ -52,6 +52,10 @@ class MainData:
         self.requantization(channel_num)
         self.reorder()
         self.aliasing_reduction(channel_num)
+        self.IMDCT(channel_num)
+
+        # Finally we reach time domain!
+        self.frequency_inversion(channel_num)
 
     def unpack_scale_factors(self, channel_num):
         """
@@ -324,41 +328,59 @@ class MainData:
         '''
         The frequency lines from the Alias reduction block are mapped to 32 Polyphase filter
         subbands. The IMDC will output 18 time domain samples for each of the 32 subbands.
+
+        The first half of the block of 36 values is overlapped with the second half of the
+        previous block. The second half of the actual block is stored to be used in
+        the next block.
         '''
+        z, pre_z = None, [0] * 18
+        self.samples = [0] * 2
         for gran in range(2):
+            self.samples[gran] = [0] * channel_num
             for chan in range(channel_num):
+                self.samples[gran][chan] = [0] * 32
                 block_type = self.side_info.granules[gran].channels[chan].block_type
                 n = 12 if block_type == BlockTypeInfo.THREE_SHORT_WINDOWS else 36
                 pai_factor = math.pi / (2 * n)
-                if block_type == BlockTypeInfo.THREE_SHORT_WINDOWS:
-                    # TODO: short blocks.
-                    pass
-                else:
-                    x = [0] * n  # store time-samples
-                    for sb in range(32):
+                # generate time-domain samples
+                for sb in range(32):
+                    if block_type == BlockTypeInfo.THREE_SHORT_WINDOWS:
+                        # short blocks
+                        x = [[0] * n for _ in range(3)]  # store time-samples
+                        for window in range(3):
+                            for i in range(n):
+                                x[window][i] = self._generate_IMDCT_sample(i, n, pai_factor, gran, chan, sb, window)
+                        z = self._window_overlaping_short_blocks(x)
+                    else:
+                        x = [0] * n  # store time-samples
                         for i in range(n):
                             # Producing 36 samples from 18 frequency lines
                             x[i] = self._generate_IMDCT_sample(i, n, pai_factor, gran, chan, sb)
 
                         # overlap windowing operation
-                        if block_type==BlockTypeInfo.START:
-                            z=self._window_overlaping_start_block(x)
-                        elif block_type==BlockTypeInfo.END:
-                            z=self._window_overlaping_end_block(x)
-                        elif block_type==BlockTypeInfo.FORBIDDEN:
-                            z= self._window_overlaping_long_block(x)
+                        if block_type == BlockTypeInfo.START:
+                            z = self._window_overlaping_start_block(x)
+                        elif block_type == BlockTypeInfo.END:
+                            z = self._window_overlaping_end_block(x)
+                        elif block_type == BlockTypeInfo.FORBIDDEN:
+                            z = self._window_overlaping_long_block(x)
                         else:
                             raise Exception
+                    self.samples[gran][chan][sb] = [z[i] + pre_z[i] for i in range(18)]
+                    pre_z = z[18:]
 
-
-    def _generate_IMDCT_sample(self, i, n, pai_factor, gran, chan, sb) -> float:
+    def _generate_IMDCT_sample(self, i, n, pai_factor, gran, chan, sb, window=None) -> float:
         '''
         formula:
         $x(i)=\sum_{k=0}^{(n / 2)-1} X(k) \cos \left(\frac{\pi}{2 n}\left(2 i+1+\frac{n}{2}\right)(2 k+1)\right)$
 
         X(k) means the k-th frequency line.
+        window only be used in short blocks
         '''
-        X = self.xr[gran][chan][18 * sb:18 * (sb + 1)]
+        if window is not None:
+            X = self.xr[gran][chan][18 * sb + window * 6:18 * (sb + 1) + (window + 1) * 6]
+        else:
+            X = self.xr[gran][chan][18 * sb:18 * (sb + 1)]
         x = sum([X[k] * math.cos(pai_factor * (2 * i + 1 + n / 2) * (2 * k + 1)) for k in range(n // 2)])
         return x
 
@@ -419,6 +441,14 @@ class MainData:
             z[i] = y[2][i - 18]
         # leave z[30:36] zero
         return z
+
+    def frequency_inversion(self, channel_num):
+        '''
+        The output of overlap add consists of 18 time samples for each of 32
+        polyphase subbands. Before processing the time samples into synthesis
+        polyphase filter bank , every odd time sample of every odd subband should
+        be multiplied by -1 to compensate for frequency inversion.
+        '''
 
 
 def requantize_s(fre_line, global_gain, subblock_gain, multiplier, scalefac_s):
