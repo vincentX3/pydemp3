@@ -1,3 +1,5 @@
+import math
+
 from header import Header, ChannelModeInfo
 from huffman import decode_quadruples, decode_big_values
 from side_info import SideInfo, BlockTypeInfo
@@ -48,6 +50,8 @@ class MainData:
         self.unpack_scale_factors(channel_num)
         self.unpack_huffman(channel_num)
         self.requantization(channel_num)
+        self.reorder()
+        self.aliasing_reduction(channel_num)
 
     def unpack_scale_factors(self, channel_num):
         """
@@ -169,7 +173,7 @@ class MainData:
                     elif i >= len(self.frequency_lines[gran][chan]):
                         # If there are more Huffman code bits than necessary to decode 576 values
                         # they are regarded as stuffing bits and discarded.
-                        early_stop=True
+                        early_stop = True
                         break
                     table_num = 0
                     if i < region_1_start:
@@ -208,8 +212,7 @@ class MainData:
 
                 # finally, unpack huffman come to the end.
 
-
-    def requantization(self,channel_num):
+    def requantization(self, channel_num):
         '''
         The decoded scaled and quantized frequency lines output from the Huffman decoder block are
         requantized using the scalefactors reconstructed in the Scalefactor decoding block together
@@ -251,6 +254,171 @@ class MainData:
                                                                   channel.preflag,
                                                                   self.pretab[sfb]
                                                                   )
+
+    def reorder(self):
+        '''
+        In the MDCT block the use of long windows prior to the transformation, would generate
+        frequency lines ordered first by subband and then by frequency. Using short windows instead,
+        would generate frequency lines ordered first by subband, then by window and at last by frequency.
+
+        The reordering block will search for short windows in each of the 36 subbands. If short
+        windows are found they are reordered
+        '''
+        # TODO: reorder short blocks
+        pass
+
+    def joint_stereo_decode(self):
+        '''
+        The purpose of the Stereo Processing block is to perform the necessary processing to convert
+        the encoded stereo signal into separate left/right stereo signals. The method used for encoding
+        the stereo signal can be read from the mode and mode_extension in the header of each frame.
+        '''
+        if self.header.channel_mode == ChannelModeInfo.JOINT_STEREO:
+            print('>>> frame used Joint stereo mode.')
+            # TODO: assuming PC use big order.
+            is_intensity_stereo = True if self.header.mode_extension[1] == '1' else False
+            is_MS_stereo = True if self.header.mode_extension[0] == '1' else False
+            if is_MS_stereo:
+                print('>>> MS stereo decoding.')
+                self._MS_stereo_decode()
+            # TODO: check self.L R
+            if is_intensity_stereo:
+                print('>>> Intensity stereo decoding.')
+                self._intensity_stereo_decode()
+        else:
+            # TODO: save result in xr.
+            pass
+
+    def _MS_stereo_decode(self):
+        pass
+
+    def _intensity_stereo_decode(self):
+        pass
+
+    def aliasing_reduction(self, channel_num):
+        '''
+        Aliasing reduction is done by merging the frequency lines
+        using eight butterfly calculations for each sub-band.
+
+        result save back in xr.
+        '''
+        # butterfly_coefficients
+        c = [-0.6, -0.535, -0.33, -0.185, -0.095, -0.041, -0.00142, -0.0037]
+        cs = [1 / ((1 + c_i ** 2) ** 0.5) for c_i in c]
+        ca = [c_i / ((1 + c_i ** 2) ** 0.5) for c_i in c]
+
+        for gran in range(2):
+            for chan in range(channel_num):
+                xar = [0] * 576
+                # eight butterfly calculations for each subband
+                for sb in range(32):
+                    for i in range(8):
+                        xar[18 * sb + 18 - i - 1] = self.xr[gran][chan][18 * sb + 18 - i - 1] * cs[i] - \
+                                                    self.xr[gran][chan][18 * sb + i] * ca[i]
+                        xar[18 * sb + i] = self.xr[gran][chan][18 * sb + i] + \
+                                           self.xr[gran][chan][18 * sb + 18 - i - 1] * ca[i]
+                    # save aliasing reduction back.
+                    self.xr[gran][chan] = xar
+
+    def IMDCT(self, channel_num):
+        '''
+        The frequency lines from the Alias reduction block are mapped to 32 Polyphase filter
+        subbands. The IMDC will output 18 time domain samples for each of the 32 subbands.
+        '''
+        for gran in range(2):
+            for chan in range(channel_num):
+                block_type = self.side_info.granules[gran].channels[chan].block_type
+                n = 12 if block_type == BlockTypeInfo.THREE_SHORT_WINDOWS else 36
+                pai_factor = math.pi / (2 * n)
+                if block_type == BlockTypeInfo.THREE_SHORT_WINDOWS:
+                    # TODO: short blocks.
+                    pass
+                else:
+                    x = [0] * n  # store time-samples
+                    for sb in range(32):
+                        for i in range(n):
+                            # Producing 36 samples from 18 frequency lines
+                            x[i] = self._generate_IMDCT_sample(i, n, pai_factor, gran, chan, sb)
+
+                        # overlap windowing operation
+                        if block_type==BlockTypeInfo.START:
+                            z=self._window_overlaping_start_block(x)
+                        elif block_type==BlockTypeInfo.END:
+                            z=self._window_overlaping_end_block(x)
+                        elif block_type==BlockTypeInfo.FORBIDDEN:
+                            z= self._window_overlaping_long_block(x)
+                        else:
+                            raise Exception
+
+
+    def _generate_IMDCT_sample(self, i, n, pai_factor, gran, chan, sb) -> float:
+        '''
+        formula:
+        $x(i)=\sum_{k=0}^{(n / 2)-1} X(k) \cos \left(\frac{\pi}{2 n}\left(2 i+1+\frac{n}{2}\right)(2 k+1)\right)$
+
+        X(k) means the k-th frequency line.
+        '''
+        X = self.xr[gran][chan][18 * sb:18 * (sb + 1)]
+        x = sum([X[k] * math.cos(pai_factor * (2 * i + 1 + n / 2) * (2 * k + 1)) for k in range(n // 2)])
+        return x
+
+    def _window_overlaping_long_block(self, samples: list) -> list:
+        '''
+        formula:
+        $z_{i}=x_{i} \sin \left(\frac{\pi}{35}\left(i+\frac{1}{2}\right)\right) \quad$ for $i=0$ to 35
+        '''
+        assert len(samples) == 36  # make sure samples are used for long blocks
+        return [samples[i] * math.sin((i + 0.5) * math.pi / 36) for i in range(36)]
+
+    def _window_overlaping_start_block(self, samples: list) -> list:
+        '''
+        formula:
+        $\mathbf{z}_{i}=\left\{\begin{array}{ll}x_{i} \sin \left(\frac{\pi}{35}\left(i+\frac{1}{2}\right)\right) & \text { for } i=0 \text { to } 17 \\ x_{i} & \text { for } i=18 \text { to } 23 \\ x_{i} \sin \left(\frac{\pi}{12}\left(i-18+\frac{1}{2}\right)\right) & \text { for } i=24 \text { to } 29 \\ 0 & \text { for } i=30 \text { to } 35\end{array}\right.$
+        '''
+        z = [0] * 36
+        for i in range(18):
+            z[i] = samples[i] * math.sin((i + 0.5) * math.pi / 36)
+        for i in range(18, 24):
+            z[i] = samples[i]
+        for i in range(24, 30):
+            z[i] = samples[i] * math.sin((i - 17.5) * math.pi / 12)
+        # leave rest zero.
+        return z
+
+    def _window_overlaping_end_block(self, samples: list) -> list:
+        '''
+        formula:
+        $z_{i}=\left\{\begin{array}{ll}0 & \text { for } i=0 \text { to } 5 \\ x_{i} \sin \left(\frac{\pi}{12}\left(i-6+\frac{1}{2}\right)\right) & \text { for } i=6 \text { to } 11 \\ x_{i} & \text { for } i=12 \text { to } 17 \\ x_{i} \sin \left(\frac{\pi}{36}\left(i+\frac{1}{2}\right)\right) & \text { for } i=18 \text { to } 35\end{array}\right.$
+        '''
+        z = [0] * 36
+        for i in range(6, 12):
+            z[i] = samples[i] * math.sin((i - 5.5) * math.pi / 12)
+        for i in range(12, 18):
+            z[i] = samples[i]
+        for i in range(18, 36):
+            z[i] = samples[i] * math.sin((i + 0.5) * math.pi / 36)
+        return z
+
+    def _window_overlaping_short_blocks(self, samples_lists) -> list:
+        '''
+        formula:
+        see pic in ~/doc/short_block_window.png
+        '''
+        z = [0] * 36
+        y = [0] * 3
+        for j in range(3):
+            y[j] = [samples_lists[j][i] * math.sin((i + 0.5) * math.pi / 12) for i in range(12)]
+        # leave z[0:6] zero
+        for i in range(6, 12):
+            z[i] = y[0][i - 6]
+        for i in range(12, 18):
+            z[i] = y[0][i - 6] + y[1][i - 12]
+        for i in range(18, 24):
+            z[i] = y[1][i - 12] + y[2][i - 18]
+        for i in range(24, 30):
+            z[i] = y[2][i - 18]
+        # leave z[30:36] zero
+        return z
 
 
 def requantize_s(fre_line, global_gain, subblock_gain, multiplier, scalefac_s):

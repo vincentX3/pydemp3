@@ -222,6 +222,7 @@ class Header(object):
             'version':self.MPEG_version.value,
             'channel mode':self.channel_mode.value,
             'layer mode':self.layer.value,
-            'sampling_rate_frequency':self.sampling_rate_frequency,
-            'bitrate':self.bitrate
+            'sampling rate frequency':self.sampling_rate_frequency,
+            'bitrate':self.bitrate,
+            'mode extension':self.mode_extension
         })

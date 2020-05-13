@@ -110,5 +110,4 @@ class SideInfo:
         # The ScaleFactor Selection Information determines weather the same scalefactors are transferred for both granules or not.
         self.scfsi = [[self._bits.read_as_int(1) for _ in range(4)] for _ in range(channel_num)]
 
-        # TODO: check channel_num
         self.granules=[Granule(self._bits,i,channel_num) for i in range(2)]
