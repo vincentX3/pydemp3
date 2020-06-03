@@ -7,6 +7,8 @@ from huffman import decode_quadruples, decode_big_values
 from side_info import SideInfo, BlockTypeInfo
 from utils.bit import Bit
 
+DEBUG = True
+
 
 class MainData:
     """
@@ -17,7 +19,6 @@ class MainData:
     # This is equivalent to multiplication of the requantized scalefactors with the
     # Table 11 values which also means additional high frequency amplification
     # of the quantized values.
-    # todo: check pretab. pdf为21位，和scale_band_indicies位数不匹配，个人补加末尾0
     pretab = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 3, 2, 0]
 
     scalefac_sizes = [
@@ -47,20 +48,24 @@ class MainData:
         self._bits = Bit(bytes_str)
         self.header = header
         self.side_info = side_info
-        channel_num = 1 if header.channel_mode == ChannelModeInfo.MONO else 2
+        self.channel_num = 1 if header.channel_mode == ChannelModeInfo.MONO else 2
 
-        self.unpack_scale_factors(channel_num)
-        self.unpack_huffman(channel_num)
-        self.requantization(channel_num)
+        if DEBUG:
+            print("- main data bits length:", self._bits.get_length())
+        self.unpack_scale_factors()
+        if DEBUG:
+            print("- main data bits pointer:", self._bits.get_pointer())
+        self.unpack_huffman()
+        self.requantization()
         self.reorder()
-        self.aliasing_reduction(channel_num)
-        self.IMDCT(channel_num)
+        self.aliasing_reduction()
+        self.IMDCT()
 
         # Finally we reach time domain!
-        self.frequency_inversion(channel_num)
-        self.synthesis(channel_num)
+        self.frequency_inversion()
+        self.synthesis()
 
-    def unpack_scale_factors(self, channel_num):
+    def unpack_scale_factors(self):
         """
         modified from: https://github.com/SoryRawyer/mp3po
 
@@ -75,7 +80,7 @@ class MainData:
             granule = self.side_info.granules[gran]
             self.scalefac_l[gran] = [0] * 2
             self.scalefac_s[gran] = [0] * 2
-            for chan in range(0, channel_num):
+            for chan in range(0, self.channel_num):
                 channel = granule.channels[chan]
                 slen1 = self.scalefac_sizes[channel.scalefac_compress][0]
                 slen2 = self.scalefac_sizes[channel.scalefac_compress][1]
@@ -85,7 +90,7 @@ class MainData:
                     if channel.mixed_block_flag:
                         # mixed blocks & short blocks 17 slen1 + 18 slen2 factors
                         for k in range(0, 8):
-                            self.scalefac_l[gran][chan][k] = self._bits.read_as_int_as_int(slen1)
+                            self.scalefac_l[gran][chan][k] = self._bits.read_as_int(slen1)
                         for k in range(3, 6):
                             self.scalefac_s[gran][chan][k] = [0] * 3
                             for sfb in range(0, 3):
@@ -133,7 +138,7 @@ class MainData:
                                     self.scalefac_l[gran][chan][sfb] = self._bits.read_as_int(slen2)
                     self.scalefac_l[gran][chan][21] = 0
 
-    def unpack_huffman(self, channel_num):
+    def unpack_huffman(self):
         """
         unpack_huffman : unpack the huffman samples.
         5 regions:
@@ -152,7 +157,7 @@ class MainData:
         for gran in range(0, 2):
             self.frequency_lines[gran] = [0] * 2
             granule = self.side_info.granules[gran]
-            for chan in range(0, channel_num):
+            for chan in range(0, self.channel_num):
                 channel = granule.channels[chan]
                 self.frequency_lines[gran][chan] = [0] * 576
                 # print(chan, granule)
@@ -169,7 +174,7 @@ class MainData:
 
                     region_2_idx = (channel.region0_count +
                                     channel.region1_count + 2)
-                    print('region_2_idx: {}'.format(region_2_idx))
+                    # print('region_2_idx: {}'.format(region_2_idx))
                     region_2_start = long_bands[region_2_idx]
 
                 # big value regions
@@ -219,7 +224,7 @@ class MainData:
 
                 # finally, unpack huffman come to the end.
 
-    def requantization(self, channel_num):
+    def requantization(self):
         '''
         The decoded scaled and quantized frequency lines output from the Huffman decoder block are
         requantized using the scalefactors reconstructed in the Scalefactor decoding block together
@@ -230,7 +235,7 @@ class MainData:
         self.xr = [0] * 2
         for gran in range(2):
             self.xr[gran] = [0] * 2
-            for chan in range(channel_num):
+            for chan in range(self.channel_num):
                 self.xr[gran][chan] = [0] * 576
                 channel = self.side_info.granules[gran].channels[chan]
                 scalefac_multiplier = (channel.scalefac_scale + 1) / 2
@@ -281,16 +286,16 @@ class MainData:
         the stereo signal can be read from the mode and mode_extension in the header of each frame.
         '''
         if self.header.channel_mode == ChannelModeInfo.JOINT_STEREO:
-            print('>>> frame used Joint stereo mode.')
+            print('-> frame used Joint stereo mode.')
             # TODO: assuming PC use big order.
             is_intensity_stereo = True if self.header.mode_extension[1] == '1' else False
             is_MS_stereo = True if self.header.mode_extension[0] == '1' else False
             if is_MS_stereo:
-                print('>>> MS stereo decoding.')
+                print('-> MS stereo decoding.')
                 self._MS_stereo_decode()
             # TODO: check self.L R
             if is_intensity_stereo:
-                print('>>> Intensity stereo decoding.')
+                print('-> Intensity stereo decoding.')
                 self._intensity_stereo_decode()
         else:
             # TODO: save result in xr.
@@ -302,7 +307,7 @@ class MainData:
     def _intensity_stereo_decode(self):
         pass
 
-    def aliasing_reduction(self, channel_num):
+    def aliasing_reduction(self):
         '''
         Aliasing reduction is done by merging the frequency lines
         using eight butterfly calculations for each sub-band.
@@ -315,7 +320,7 @@ class MainData:
         ca = [c_i / ((1 + c_i ** 2) ** 0.5) for c_i in c]
 
         for gran in range(2):
-            for chan in range(channel_num):
+            for chan in range(self.channel_num):
                 xar = [0] * 576
                 # eight butterfly calculations for each subband
                 for sb in range(32):
@@ -327,7 +332,7 @@ class MainData:
                     # save aliasing reduction back.
                     self.xr[gran][chan] = xar
 
-    def IMDCT(self, channel_num):
+    def IMDCT(self):
         '''
         The frequency lines from the Alias reduction block are mapped to 32 Polyphase filter
         subbands. The IMDC will output 18 time domain samples for each of the 32 subbands.
@@ -339,8 +344,8 @@ class MainData:
         z, pre_z = None, [0] * 18
         self.samples = [0] * 2
         for gran in range(2):
-            self.samples[gran] = [0] * channel_num
-            for chan in range(channel_num):
+            self.samples[gran] = [0] * self.channel_num
+            for chan in range(self.channel_num):
                 self.samples[gran][chan] = [0] * 32
                 block_type = self.side_info.granules[gran].channels[chan].block_type
                 n = 12 if block_type == BlockTypeInfo.THREE_SHORT_WINDOWS else 36
@@ -445,7 +450,7 @@ class MainData:
         # leave z[30:36] zero
         return z
 
-    def frequency_inversion(self, channel_num):
+    def frequency_inversion(self):
         '''
         The output of overlap add consists of 18 time samples for each of 32
         polyphase subbands. Before processing the time samples into synthesis
@@ -453,21 +458,22 @@ class MainData:
         be multiplied by -1 to compensate for frequency inversion.
         '''
         for gran in range(2):
-            for chan in range(channel_num):
+            for chan in range(self.channel_num):
                 for sb in range(0, 32, 2):
                     # TODO: what is odd? zero base or one base
                     for idx in range(0, 18, 2):
                         self.samples[gran][chan][sb][idx] *= -1
 
-    def synthesis(self, channel_num):
+    def synthesis(self):
         '''
         The synthesis Polyphase filterbank transforms the 32 subbands of 18 time domain samples in
         each granule to 18 blocks of 32 PCM samples, which is the final decoding result.
         '''
-        print('>>> synthesis Polyphase filterbank transforming.')
+        print('-> synthesis Polyphase filterbank transforming.')
         queue_V = []
+        self.pcm_output = []
         for gran in range(2):
-            for chan in range(channel_num):
+            for chan in range(self.channel_num):
                 for idx in range(16):
                     # TODO: quite confused. We have 18 subbands but just use 16
                     # 1. fetch subband samples
@@ -484,9 +490,7 @@ class MainData:
                 W = [U[i] * sythesis_coefficients.D[i] for i in range(512)]
 
                 # 5. produce PCM samples
-                PCM = [sum([W[j + 32 * i] for i in range(16)]) for j in range(32)]
-                # TODO: save PCM output
-                # TODO: 转为整数 保存输出
+                self.pcm_output += [sum([W[j + 32 * i] for i in range(16)]) for j in range(32)]
 
     def _DCT_I(self, X: list) -> list:
         '''

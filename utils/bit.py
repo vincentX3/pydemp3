@@ -14,7 +14,9 @@ class Bit:
 
     def read(self, num=1):
         if not self._check_valid_index(self.__pointer + num - 1):
-            raise IndexError("invalid number of bits to read.")
+            raise IndexError("Invalid number of bits to read. \n"
+                             "Current pointer at: %d, total length is %d, number wants to read are: %d"
+                             %(self.__pointer, len(self.__bits),num))
         bits = self.__bits[self.__pointer:self.__pointer + num]
         self.__pointer += num
         return bits
@@ -27,7 +29,7 @@ class Bit:
         read a number of bits and translate into 10-based integer.
         '''
         tmp = self.read(num)
-        return 0 if tmp==b'' else int(tmp, 2)
+        return 0 if tmp=='' else int(tmp, 2)
 
     def add_bits(self, bits: str, pos=None):
         if pos is None:
@@ -42,6 +44,9 @@ class Bit:
 
     def get_pointer(self):
         return self.__pointer
+
+    def get_length(self):
+        return len(self.__bits)
 
     def set_pointer(self, idx):
         if not self._check_valid_index(idx):

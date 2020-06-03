@@ -5,6 +5,7 @@ Yep, current version is implemented definitely based on the original formulas.
 So, it's really slow, but during the journey of implementation I got a deep understanding of MPEG-3 decoder. 
 Hope the source code could give you a little bit insight of MP3 codec. 
 
+Helpful documents and illustrations are [here](./doc)
 
 ---
 Reference :

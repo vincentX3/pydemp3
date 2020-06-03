@@ -4,6 +4,7 @@ from header import ChannelModeInfo
 from utils.bit import Bit
 from enum import Enum
 
+DEBUG=True
 
 class BlockTypeInfo(Enum):
     FORBIDDEN = '00'
@@ -23,6 +24,8 @@ class ChanelSideInfo:
         self.index = idx
         # bits = Bit(bytes_str)
         self.part2_3_length = bits.read_as_int(12)
+        if DEBUG:
+            print("- channel %d part2_3_length: %d"%(idx,self.part2_3_length))
         self.big_values = bits.read_as_int(9)
         self.global_gain = bits.read_as_int(8)
         self.scalefac_compress = bits.read_as_int(4)
@@ -46,11 +49,13 @@ class ChanelSideInfo:
                 for i in range(3):
                     self.subblock_gain[i] = bits.read_as_int(3)
         else:
+            # TODO: check whether can we just set type as '00'
+            # block type doesn't given
+            self.block_type=BlockTypeInfo.FORBIDDEN
             for i in range(3):
                 self.table_select[i] = bits.read_as_int(5)
-
-        self.region0_count = bits.read_as_int(4)
-        self.region1_count = bits.read_as_int(3)
+            self.region0_count = bits.read_as_int(4)
+            self.region1_count = bits.read_as_int(3)
         self.preflag = bits.read_as_int(1)
 
         # The scalefactors are logarithmically quantized with a step size of 2 or v2
@@ -100,7 +105,7 @@ class SideInfo:
 
     def __init__(self, bytes_str: str, channel_mode: ChannelModeInfo):
         self._bits = Bit(bytes_str)
-        self.main_data_begin = self._bits.read_as_int(9)
+        self.main_data_begin = self._bits.read_as_int(9) # bit reservoir, which enables the left over free space in the main data area of a frame to be used by consecutive frames.
         if channel_mode == ChannelModeInfo.MONO:
             self.private_bits = self._bits.read_as_int(5)
         else:
@@ -111,3 +116,9 @@ class SideInfo:
         self.scfsi = [[self._bits.read_as_int(1) for _ in range(4)] for _ in range(channel_num)]
 
         self.granules=[Granule(self._bits,i,channel_num) for i in range(2)]
+        if DEBUG:
+            total_part2_3_length=0
+            for gr in range(2):
+                for ch in range(2):
+                    total_part2_3_length+=self.granules[gr].channels[ch].part2_3_length
+            print("- total total_part2_3_length bits: %d, bytes: %.2f"%(total_part2_3_length,total_part2_3_length/8))
